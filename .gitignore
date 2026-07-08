@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Dados locais - não versionar
+finances.db
+gastos.xlsx
+
+# Segredos - use .streamlit/secrets.toml.example como modelo
+.streamlit/secrets.toml
+
+# Config local do Claude Code
+.claude/
