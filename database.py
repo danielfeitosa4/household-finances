@@ -12,6 +12,10 @@ CATEGORIAS_PADRAO = [
     "Saúde",
     "Lazer",
     "Educação",
+    "Cartão de Crédito",
+    "Energia",
+    "Água",
+    "Internet",
     "Contas Fixas",
     "Outros",
 ]
@@ -32,17 +36,39 @@ def init_db() -> None:
                 data TEXT NOT NULL,
                 descricao TEXT NOT NULL,
                 categoria TEXT NOT NULL,
-                valor REAL NOT NULL
+                valor REAL NOT NULL,
+                gasto_fixo_id INTEGER
+            )
+            """
+        )
+        colunas = [r["name"] for r in conn.execute("PRAGMA table_info(gastos)")]
+        if "gasto_fixo_id" not in colunas:
+            conn.execute("ALTER TABLE gastos ADD COLUMN gasto_fixo_id INTEGER")
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS gastos_fixos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome TEXT NOT NULL,
+                categoria TEXT NOT NULL,
+                valor_esperado REAL NOT NULL
             )
             """
         )
 
 
-def adicionar_gasto(data_gasto: date, descricao: str, categoria: str, valor: float) -> None:
+def adicionar_gasto(
+    data_gasto: date,
+    descricao: str,
+    categoria: str,
+    valor: float,
+    gasto_fixo_id: int | None = None,
+) -> None:
     with get_connection() as conn:
         conn.execute(
-            "INSERT INTO gastos (data, descricao, categoria, valor) VALUES (?, ?, ?, ?)",
-            (data_gasto.isoformat(), descricao, categoria, valor),
+            "INSERT INTO gastos (data, descricao, categoria, valor, gasto_fixo_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (data_gasto.isoformat(), descricao, categoria, valor, gasto_fixo_id),
         )
 
 
@@ -69,3 +95,38 @@ def meses_disponiveis() -> list[str]:
             "SELECT DISTINCT substr(data, 1, 7) AS mes FROM gastos ORDER BY mes DESC"
         ).fetchall()
     return [r["mes"] for r in rows]
+
+
+def adicionar_gasto_fixo(nome: str, categoria: str, valor_esperado: float) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO gastos_fixos (nome, categoria, valor_esperado) VALUES (?, ?, ?)",
+            (nome, categoria, valor_esperado),
+        )
+
+
+def remover_gasto_fixo(gasto_fixo_id: int) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM gastos_fixos WHERE id = ?", (gasto_fixo_id,))
+
+
+def listar_gastos_fixos() -> list[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute("SELECT * FROM gastos_fixos ORDER BY nome").fetchall()
+
+
+def gastos_fixos_pendentes(ano: int, mes: int) -> list[sqlite3.Row]:
+    """Gastos fixos que ainda não foram lançados no mês informado."""
+    prefixo = f"{ano:04d}-{mes:02d}"
+    with get_connection() as conn:
+        return conn.execute(
+            """
+            SELECT gf.* FROM gastos_fixos gf
+            WHERE NOT EXISTS (
+                SELECT 1 FROM gastos g
+                WHERE g.gasto_fixo_id = gf.id AND substr(g.data, 1, 7) = ?
+            )
+            ORDER BY gf.nome
+            """,
+            (prefixo,),
+        ).fetchall()
