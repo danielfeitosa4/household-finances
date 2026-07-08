@@ -1,4 +1,5 @@
 """App de controle de finanças: gastos diários, mensais e contas fixas."""
+import os
 from datetime import date
 from pathlib import Path
 
@@ -146,6 +147,10 @@ if st.session_state.get("authentication_status") is False:
 elif st.session_state.get("authentication_status") is None:
     st.warning("Informe usuário e senha para acessar.")
     st.stop()
+
+# Usa o banco permanente (Postgres) se configurado; senão, SQLite local.
+if "database" in st.secrets and st.secrets["database"].get("url"):
+    os.environ["DATABASE_URL"] = st.secrets["database"]["url"]
 
 init_db()
 

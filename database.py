@@ -1,7 +1,26 @@
-"""Camada de acesso ao banco SQLite de gastos."""
-import sqlite3
+"""Camada de acesso ao banco de dados dos gastos.
+
+Funciona com SQLite (arquivo local, para desenvolvimento) ou PostgreSQL
+(nuvem, permanente). O banco é escolhido pela variável de ambiente
+DATABASE_URL; se ela não existir, usa o SQLite local finances.db.
+"""
+import os
 from datetime import date
 from pathlib import Path
+
+from sqlalchemy import (
+    Column,
+    Float,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    create_engine,
+    delete,
+    insert,
+    select,
+)
+from sqlalchemy.engine import Engine
 
 DB_PATH = Path(__file__).parent / "finances.db"
 
@@ -20,41 +39,52 @@ CATEGORIAS_PADRAO = [
     "Outros",
 ]
 
+metadata = MetaData()
 
-def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+gastos_tbl = Table(
+    "gastos",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("data", String, nullable=False),
+    Column("descricao", String, nullable=False),
+    Column("categoria", String, nullable=False),
+    Column("valor", Float, nullable=False),
+    Column("gasto_fixo_id", Integer, nullable=True),
+)
+
+gastos_fixos_tbl = Table(
+    "gastos_fixos",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("nome", String, nullable=False),
+    Column("categoria", String, nullable=False),
+    Column("valor_esperado", Float, nullable=False),
+)
+
+_engine: Engine | None = None
+
+
+def _database_url() -> str:
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        return f"sqlite:///{DB_PATH}"
+    # Provedores costumam entregar postgres:// ; SQLAlchemy espera o driver.
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+psycopg2://", 1)
+    elif url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    return url
+
+
+def get_engine() -> Engine:
+    global _engine
+    if _engine is None:
+        _engine = create_engine(_database_url(), pool_pre_ping=True)
+    return _engine
 
 
 def init_db() -> None:
-    with get_connection() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS gastos (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                data TEXT NOT NULL,
-                descricao TEXT NOT NULL,
-                categoria TEXT NOT NULL,
-                valor REAL NOT NULL,
-                gasto_fixo_id INTEGER
-            )
-            """
-        )
-        colunas = [r["name"] for r in conn.execute("PRAGMA table_info(gastos)")]
-        if "gasto_fixo_id" not in colunas:
-            conn.execute("ALTER TABLE gastos ADD COLUMN gasto_fixo_id INTEGER")
-
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS gastos_fixos (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                nome TEXT NOT NULL,
-                categoria TEXT NOT NULL,
-                valor_esperado REAL NOT NULL
-            )
-            """
-        )
+    metadata.create_all(get_engine())
 
 
 def adicionar_gasto(
@@ -64,69 +94,80 @@ def adicionar_gasto(
     valor: float,
     gasto_fixo_id: int | None = None,
 ) -> None:
-    with get_connection() as conn:
+    with get_engine().begin() as conn:
         conn.execute(
-            "INSERT INTO gastos (data, descricao, categoria, valor, gasto_fixo_id) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (data_gasto.isoformat(), descricao, categoria, valor, gasto_fixo_id),
+            insert(gastos_tbl).values(
+                data=data_gasto.isoformat(),
+                descricao=descricao,
+                categoria=categoria,
+                valor=valor,
+                gasto_fixo_id=gasto_fixo_id,
+            )
         )
 
 
 def remover_gasto(gasto_id: int) -> None:
-    with get_connection() as conn:
-        conn.execute("DELETE FROM gastos WHERE id = ?", (gasto_id,))
+    with get_engine().begin() as conn:
+        conn.execute(delete(gastos_tbl).where(gastos_tbl.c.id == gasto_id))
 
 
-def listar_gastos(ano: int | None = None, mes: int | None = None) -> list[sqlite3.Row]:
-    query = "SELECT * FROM gastos"
-    params: list[str] = []
+def listar_gastos(ano: int | None = None, mes: int | None = None) -> list[dict]:
+    consulta = select(gastos_tbl)
     if ano is not None and mes is not None:
         prefixo = f"{ano:04d}-{mes:02d}"
-        query += " WHERE data LIKE ?"
-        params.append(f"{prefixo}%")
-    query += " ORDER BY data DESC, id DESC"
-    with get_connection() as conn:
-        return conn.execute(query, params).fetchall()
+        consulta = consulta.where(gastos_tbl.c.data.like(f"{prefixo}%"))
+    consulta = consulta.order_by(gastos_tbl.c.data.desc(), gastos_tbl.c.id.desc())
+    with get_engine().connect() as conn:
+        return [dict(r._mapping) for r in conn.execute(consulta)]
 
 
 def meses_disponiveis() -> list[str]:
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT DISTINCT substr(data, 1, 7) AS mes FROM gastos ORDER BY mes DESC"
-        ).fetchall()
-    return [r["mes"] for r in rows]
+    with get_engine().connect() as conn:
+        linhas = conn.execute(
+            select(gastos_tbl.c.data).order_by(gastos_tbl.c.data.desc())
+        )
+        meses = {r[0][:7] for r in linhas}
+    return sorted(meses, reverse=True)
 
 
 def adicionar_gasto_fixo(nome: str, categoria: str, valor_esperado: float) -> None:
-    with get_connection() as conn:
+    with get_engine().begin() as conn:
         conn.execute(
-            "INSERT INTO gastos_fixos (nome, categoria, valor_esperado) VALUES (?, ?, ?)",
-            (nome, categoria, valor_esperado),
+            insert(gastos_fixos_tbl).values(
+                nome=nome, categoria=categoria, valor_esperado=valor_esperado
+            )
         )
 
 
 def remover_gasto_fixo(gasto_fixo_id: int) -> None:
-    with get_connection() as conn:
-        conn.execute("DELETE FROM gastos_fixos WHERE id = ?", (gasto_fixo_id,))
+    with get_engine().begin() as conn:
+        conn.execute(
+            delete(gastos_fixos_tbl).where(gastos_fixos_tbl.c.id == gasto_fixo_id)
+        )
 
 
-def listar_gastos_fixos() -> list[sqlite3.Row]:
-    with get_connection() as conn:
-        return conn.execute("SELECT * FROM gastos_fixos ORDER BY nome").fetchall()
+def listar_gastos_fixos() -> list[dict]:
+    with get_engine().connect() as conn:
+        return [
+            dict(r._mapping)
+            for r in conn.execute(
+                select(gastos_fixos_tbl).order_by(gastos_fixos_tbl.c.nome)
+            )
+        ]
 
 
-def gastos_fixos_pendentes(ano: int, mes: int) -> list[sqlite3.Row]:
+def gastos_fixos_pendentes(ano: int, mes: int) -> list[dict]:
     """Gastos fixos que ainda não foram lançados no mês informado."""
     prefixo = f"{ano:04d}-{mes:02d}"
-    with get_connection() as conn:
-        return conn.execute(
-            """
-            SELECT gf.* FROM gastos_fixos gf
-            WHERE NOT EXISTS (
-                SELECT 1 FROM gastos g
-                WHERE g.gasto_fixo_id = gf.id AND substr(g.data, 1, 7) = ?
-            )
-            ORDER BY gf.nome
-            """,
-            (prefixo,),
-        ).fetchall()
+    lancados = (
+        select(gastos_tbl.c.gasto_fixo_id)
+        .where(gastos_tbl.c.gasto_fixo_id == gastos_fixos_tbl.c.id)
+        .where(gastos_tbl.c.data.like(f"{prefixo}%"))
+    )
+    consulta = (
+        select(gastos_fixos_tbl)
+        .where(~lancados.exists())
+        .order_by(gastos_fixos_tbl.c.nome)
+    )
+    with get_engine().connect() as conn:
+        return [dict(r._mapping) for r in conn.execute(consulta)]
