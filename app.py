@@ -107,6 +107,8 @@ div[data-testid="stForm"] {{
 .stTextArea textarea,
 div[data-baseweb="input"],
 div[data-baseweb="base-input"],
+.stSelectbox div[data-baseweb="select"],
+.stSelectbox div[data-baseweb="select"] > div,
 div[data-baseweb="select"] > div {{
     background-color: {campo_bg} !important;
     border-color: {campo_borda} !important;
