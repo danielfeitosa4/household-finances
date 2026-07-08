@@ -19,6 +19,7 @@ from sqlalchemy import (
     delete,
     insert,
     select,
+    update,
 )
 from sqlalchemy.engine import Engine
 
@@ -106,6 +107,26 @@ def adicionar_gasto(
         )
 
 
+def atualizar_gasto(
+    gasto_id: int,
+    data_gasto: date,
+    descricao: str,
+    categoria: str,
+    valor: float,
+) -> None:
+    with get_engine().begin() as conn:
+        conn.execute(
+            update(gastos_tbl)
+            .where(gastos_tbl.c.id == gasto_id)
+            .values(
+                data=data_gasto.isoformat(),
+                descricao=descricao,
+                categoria=categoria,
+                valor=valor,
+            )
+        )
+
+
 def remover_gasto(gasto_id: int) -> None:
     with get_engine().begin() as conn:
         conn.execute(delete(gastos_tbl).where(gastos_tbl.c.id == gasto_id))
@@ -136,6 +157,17 @@ def adicionar_gasto_fixo(nome: str, categoria: str, valor_esperado: float) -> No
             insert(gastos_fixos_tbl).values(
                 nome=nome, categoria=categoria, valor_esperado=valor_esperado
             )
+        )
+
+
+def atualizar_gasto_fixo(
+    gasto_fixo_id: int, nome: str, categoria: str, valor_esperado: float
+) -> None:
+    with get_engine().begin() as conn:
+        conn.execute(
+            update(gastos_fixos_tbl)
+            .where(gastos_fixos_tbl.c.id == gasto_fixo_id)
+            .values(nome=nome, categoria=categoria, valor_esperado=valor_esperado)
         )
 
 

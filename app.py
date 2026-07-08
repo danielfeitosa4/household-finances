@@ -11,6 +11,8 @@ from database import (
     CATEGORIAS_PADRAO,
     adicionar_gasto,
     adicionar_gasto_fixo,
+    atualizar_gasto,
+    atualizar_gasto_fixo,
     gastos_fixos_pendentes,
     init_db,
     listar_gastos,
@@ -30,17 +32,6 @@ MESES_PT = [
 
 def rotulo_mes(ano: int, mes: int) -> str:
     return f"{MESES_PT[mes - 1]}/{ano}"
-
-
-def lista_meses(voltar: int = 6, avancar: int = 6) -> list[tuple[int, int]]:
-    """Lista de (ano, mês) em torno do mês atual, para o seletor de gastos fixos."""
-    hoje = date.today()
-    base = hoje.year * 12 + (hoje.month - 1)
-    resultado = []
-    for delta in range(-voltar, avancar + 1):
-        total = base + delta
-        resultado.append((total // 12, total % 12 + 1))
-    return resultado
 
 
 def moeda(valor: float) -> str:
@@ -217,18 +208,66 @@ with tab_painel:
             st.line_chart(df_filtrado.groupby(df_filtrado["data"].dt.date)["valor"].sum())
 
         st.subheader("Lista de gastos")
-        tabela = df_filtrado[["id", "data", "descricao", "categoria", "valor"]].copy()
-        tabela["data"] = tabela["data"].dt.strftime("%d/%m/%Y")
-        st.dataframe(tabela, use_container_width=True, hide_index=True)
-
-        id_remover = st.number_input(
-            "ID do gasto para remover", min_value=0, step=1, value=0
+        st.caption(
+            "Edite os valores direto na tabela e marque 🗑️ para excluir. "
+            "Depois clique em **Salvar alterações**."
         )
-        if st.button("Remover gasto"):
-            if id_remover > 0:
-                remover_gasto(int(id_remover))
-                st.success(f"Gasto {id_remover} removido.")
+        tabela = df_filtrado[["id", "data", "descricao", "categoria", "valor"]].copy()
+        tabela["data"] = tabela["data"].dt.date
+        tabela.insert(0, "excluir", False)
+
+        editado = st.data_editor(
+            tabela,
+            column_config={
+                "excluir": st.column_config.CheckboxColumn("🗑️", help="Marque para excluir"),
+                "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
+                "descricao": st.column_config.TextColumn("Descrição"),
+                "categoria": st.column_config.SelectboxColumn(
+                    "Categoria", options=CATEGORIAS_PADRAO
+                ),
+                "valor": st.column_config.NumberColumn(
+                    "Valor", format="R$ %.2f", min_value=0.0, step=0.01
+                ),
+            },
+            column_order=["excluir", "data", "descricao", "categoria", "valor"],
+            hide_index=True,
+            use_container_width=True,
+            key="editor_gastos",
+        )
+
+        if st.button("💾 Salvar alterações", key="salvar_gastos"):
+            original = tabela.set_index("id")
+            alteracoes = 0
+            for _, linha in editado.iterrows():
+                gid = int(linha["id"])
+                if linha["excluir"]:
+                    remover_gasto(gid)
+                    alteracoes += 1
+                    continue
+                orig = original.loc[gid]
+                data_val = linha["data"]
+                if not isinstance(data_val, date):
+                    data_val = pd.to_datetime(data_val).date()
+                mudou = (
+                    data_val != orig["data"]
+                    or linha["descricao"] != orig["descricao"]
+                    or linha["categoria"] != orig["categoria"]
+                    or round(float(linha["valor"]), 2) != round(float(orig["valor"]), 2)
+                )
+                if mudou:
+                    atualizar_gasto(
+                        gid,
+                        data_val,
+                        linha["descricao"],
+                        linha["categoria"],
+                        float(linha["valor"]),
+                    )
+                    alteracoes += 1
+            if alteracoes:
+                st.success(f"{alteracoes} alteração(ões) salva(s).")
                 st.rerun()
+            else:
+                st.info("Nenhuma alteração para salvar.")
 
 # ========================= LANÇAR GASTO =========================
 with tab_lancar:
@@ -261,7 +300,7 @@ with tab_lancar:
 with tab_fixos:
     st.subheader("Contas recorrentes")
     st.caption(
-        "Cadastre uma vez cada conta fixa. Depois, escolha o mês e lance todas de uma vez."
+        "Cadastre uma vez cada conta fixa. Depois, escolha a data e lance todas de uma vez."
     )
 
     with st.form("novo_gasto_fixo", clear_on_submit=True):
@@ -296,39 +335,73 @@ with tab_fixos:
     if not gastos_fixos:
         st.info("Nenhum gasto fixo cadastrado ainda.")
     else:
-        df_fixos = pd.DataFrame([dict(g) for g in gastos_fixos])
-        st.dataframe(
-            df_fixos[["id", "nome", "categoria", "valor_esperado"]],
-            use_container_width=True,
+        st.caption(
+            "Edite os valores direto na tabela e marque 🗑️ para excluir. "
+            "Depois clique em **Salvar alterações**."
+        )
+        df_fixos = pd.DataFrame([dict(g) for g in gastos_fixos])[
+            ["id", "nome", "categoria", "valor_esperado"]
+        ].copy()
+        df_fixos.insert(0, "excluir", False)
+
+        editado_fixos = st.data_editor(
+            df_fixos,
+            column_config={
+                "excluir": st.column_config.CheckboxColumn("🗑️", help="Marque para excluir"),
+                "nome": st.column_config.TextColumn("Nome"),
+                "categoria": st.column_config.SelectboxColumn(
+                    "Categoria", options=CATEGORIAS_PADRAO
+                ),
+                "valor_esperado": st.column_config.NumberColumn(
+                    "Valor esperado", format="R$ %.2f", min_value=0.0, step=0.01
+                ),
+            },
+            column_order=["excluir", "nome", "categoria", "valor_esperado"],
             hide_index=True,
+            use_container_width=True,
+            key="editor_gastos_fixos",
         )
 
-        id_remover_fixo = st.number_input(
-            "ID do gasto fixo para remover",
-            min_value=0,
-            step=1,
-            value=0,
-            key="id_remover_fixo",
-        )
-        if st.button("Remover gasto fixo"):
-            if id_remover_fixo > 0:
-                remover_gasto_fixo(int(id_remover_fixo))
-                st.success(f"Gasto fixo {id_remover_fixo} removido.")
+        if st.button("💾 Salvar alterações", key="salvar_fixos"):
+            original_fixos = df_fixos.set_index("id")
+            alteracoes = 0
+            for _, linha in editado_fixos.iterrows():
+                fid = int(linha["id"])
+                if linha["excluir"]:
+                    remover_gasto_fixo(fid)
+                    alteracoes += 1
+                    continue
+                orig = original_fixos.loc[fid]
+                mudou = (
+                    linha["nome"] != orig["nome"]
+                    or linha["categoria"] != orig["categoria"]
+                    or round(float(linha["valor_esperado"]), 2)
+                    != round(float(orig["valor_esperado"]), 2)
+                )
+                if mudou:
+                    atualizar_gasto_fixo(
+                        fid,
+                        linha["nome"],
+                        linha["categoria"],
+                        float(linha["valor_esperado"]),
+                    )
+                    alteracoes += 1
+            if alteracoes:
+                st.success(f"{alteracoes} alteração(ões) salva(s).")
                 st.rerun()
+            else:
+                st.info("Nenhuma alteração para salvar.")
 
         st.divider()
         st.markdown("#### Lançar contas do mês")
 
-        opcoes_meses = lista_meses()
-        indice_atual = opcoes_meses.index((hoje.year, hoje.month))
-        ano_mes = st.selectbox(
-            "Mês de referência",
-            opcoes_meses,
-            index=indice_atual,
-            format_func=lambda am: rotulo_mes(am[0], am[1]),
+        data_lancamento = st.date_input(
+            "Data de lançamento",
+            value=date.today(),
+            format="DD/MM/YYYY",
+            help="As contas serão lançadas nesta data; o mês dela define quais ainda faltam.",
         )
-        ano_sel, mes_sel = ano_mes
-        primeiro_dia = date(ano_sel, mes_sel, 1)
+        ano_sel, mes_sel = data_lancamento.year, data_lancamento.month
 
         pendentes = gastos_fixos_pendentes(ano_sel, mes_sel)
 
@@ -339,7 +412,7 @@ with tab_fixos:
         else:
             st.write(
                 f"**Contas pendentes em {rotulo_mes(ano_sel, mes_sel)}** "
-                "(ajuste valor/data e desmarque o que não quiser lançar):"
+                "(ajuste o valor e desmarque o que não quiser lançar):"
             )
             df_pendentes = pd.DataFrame(
                 {
@@ -347,34 +420,32 @@ with tab_fixos:
                     "gasto_fixo_id": [p["id"] for p in pendentes],
                     "nome": [p["nome"] for p in pendentes],
                     "categoria": [p["categoria"] for p in pendentes],
-                    "data": [primeiro_dia for _ in pendentes],
                     "valor": [p["valor_esperado"] for p in pendentes],
                 }
             )
+            ids_pendentes = "-".join(str(p["id"]) for p in pendentes)
             edicao = st.data_editor(
                 df_pendentes,
                 column_config={
                     "lancar": st.column_config.CheckboxColumn("Lançar?"),
                     "nome": "Conta",
                     "categoria": "Categoria",
-                    "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
-                    "valor": st.column_config.NumberColumn("Valor", format="R$ %.2f"),
+                    "valor": st.column_config.NumberColumn(
+                        "Valor", format="R$ %.2f", min_value=0.0, step=0.01
+                    ),
                 },
-                column_order=["lancar", "nome", "categoria", "data", "valor"],
+                column_order=["lancar", "nome", "categoria", "valor"],
                 disabled=["gasto_fixo_id", "nome", "categoria"],
                 hide_index=True,
                 use_container_width=True,
-                key=f"editor_pendentes_{ano_sel}_{mes_sel}",
+                key=f"editor_pendentes_{ano_sel}_{mes_sel}_{ids_pendentes}",
             )
 
             if st.button("Lançar contas selecionadas", type="primary"):
                 selecionadas = edicao[edicao["lancar"]]
                 for _, linha in selecionadas.iterrows():
-                    data_linha = linha["data"]
-                    if not isinstance(data_linha, date):
-                        data_linha = pd.to_datetime(data_linha).date()
                     adicionar_gasto(
-                        data_linha,
+                        data_lancamento,
                         linha["nome"],
                         linha["categoria"],
                         float(linha["valor"]),
